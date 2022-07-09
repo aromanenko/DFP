@@ -26,6 +26,8 @@ def generate_data(config : dict, IB_HIST_END_DT : datetime.datetime, hierarchies
         VF_FORECAST used as input data of the algorithm
     pd.DataFrame
         ML_FORECAST used as input data of the algorithm
+    pd.DataFrame
+        VF_TS_SEGMENTS containg information about segment names
     """
     freq = config['vf_time_lvl'][0]
     timerange = pd.date_range(IB_HIST_END_DT, IB_HIST_END_DT + datetime.timedelta(weeks=52), freq=freq)
@@ -50,10 +52,14 @@ def generate_data(config : dict, IB_HIST_END_DT : datetime.datetime, hierarchies
     ML_FORECAST['ASSORTMENT_TYPE'] = np.random.choice(['new', 'old'], ML_FORECAST.shape[0])
     ML_FORECAST['FORECAST_VALUE'] = np.abs(np.random.normal(500, 300, ML_FORECAST.shape[0]))
     
-    return VF_FORECAST, ML_FORECAST
+    VF_TS_SEGMENTS = VF_FORECAST.loc[:, VF_FORECAST.columns.str.contains('lvl_id')].drop_duplicates()
+    VF_TS_SEGMENTS['SEGMENT_NAME'] = "Name of segment " + VF_TS_SEGMENTS.index.astype(str)
+    
+    return VF_FORECAST, ML_FORECAST, VF_TS_SEGMENTS
     
     
-def periods_splitting(VF_FORECAST : pd.DataFrame, IB_HIST_END_DT : datetime.datetime) -> (pd.DataFrame, pd.DataFrame):
+def periods_splitting(VF_FORECAST : pd.DataFrame, IB_HIST_END_DT : datetime.datetime,
+                      delays_config_length : int) -> (pd.DataFrame, pd.DataFrame):
     """
     Step 3.1.a and 3.1.b
     
@@ -65,6 +71,8 @@ def periods_splitting(VF_FORECAST : pd.DataFrame, IB_HIST_END_DT : datetime.date
         Input table containing the keys columns, PERIOD_DT column, FORECAST_VALUE column.
     IB_HIST_END_DT : datetime.datetime
         Last known date (i.e. sales and stock information is known)
+    delays_config_length : int
+        Lenght of short-term forecasting period
     
     Returns
     -------
@@ -73,7 +81,7 @@ def periods_splitting(VF_FORECAST : pd.DataFrame, IB_HIST_END_DT : datetime.date
     pd.DataFrame
         Mid-term period of the VF_FORECAST
     """
-    mid_period = (VF_FORECAST['PERIOD_DT'] - pd.to_datetime(IB_HIST_END_DT)).dt.days > 60
+    mid_period = (VF_FORECAST['PERIOD_DT'] - pd.to_datetime(IB_HIST_END_DT)).dt.days > delays_config_length
     mid_reconciled_forecast = VF_FORECAST[mid_period].copy(deep=True)
     mid_reconciled_forecast = mid_reconciled_forecast.rename(
         columns={'PERIOD_DT' : 'PERIOD_END_DT', 'FORECAST_VALUE' : 'VF_FORECAST_VALUE_REC'}
@@ -156,7 +164,6 @@ def match_keys(VF_FORECAST : pd.DataFrame, ML_FORECAST : pd.DataFrame,
             ML_FORECAST, hierarchies[key][[ml_column_name, vf_column_name]].drop_duplicates(),
             on=ml_column_name, how='left'
         )
-        #too large, is it neccesary?
         VF_FORECAST = pd.merge(
             VF_FORECAST, hierarchies[key][[ml_column_name, vf_column_name]].drop_duplicates(),
             on=vf_column_name, how='left'
@@ -276,9 +283,31 @@ def reconcile(df : pd.DataFrame, config : dict) -> pd.DataFrame:
     return df
 
 
-def reconcilation_algorithm(VF_FORECAST : pd.DataFrame, ML_FORECAST : pd.DataFrame,
-              config : dict, IB_HIST_END_DT : datetime.datetime,
-              IB_FC_HORIZ : int, hierarchies : dict) -> (pd.DataFrame, pd.DataFrame):
+def add_segment_name(df : pd.DataFrame, VF_TS_SEGMENTS : pd.DataFrame) -> pd.DataFrame:
+    """
+    Step 3.3
+    Adding segment names
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Reconciled forecast
+    VF_TS_SEGMENTS : pd.DataFrame
+        VF_TS_SEGMENTS containg information about segment names
+        
+    Returns
+    -------
+    pd.DataFrame
+        Reconciling forecast containing segment names
+    """
+    keys = VF_TS_SEGMENTS.columns.drop('SEGMENT_NAME').tolist()
+    df = pd.merge(df, VF_TS_SEGMENTS, on=keys, how='left')
+    return df
+
+
+def reconcilation_algorithm(VF_FORECAST : pd.DataFrame, ML_FORECAST : pd.DataFrame, VF_TS_SEGMENTS : pd.DataFrame,
+                            config : dict, IB_HIST_END_DT : datetime.datetime, IB_FC_HORIZ : int,
+                            delays_config_length : int, hierarchies : dict) -> (pd.DataFrame, pd.DataFrame):
     """
     Pipeline for reconcilation algorithm.
     
@@ -296,6 +325,8 @@ def reconcilation_algorithm(VF_FORECAST : pd.DataFrame, ML_FORECAST : pd.DataFra
     ML_FORECAST : pd.DataFrame
         Input table containing the keys columns, PERIOD_DT column,
         FORECAST_VALUE column, columns with types of DEMAND and ASSORTMENT.
+    VF_TS_SEGMENTS : pd.DataFrame
+        VF_TS_SEGMENTS containg information about segment names
     config : dict
         Configuration parameters used within the step
     IB_HIST_END_DT : datetime.datetime
@@ -304,6 +335,8 @@ def reconcilation_algorithm(VF_FORECAST : pd.DataFrame, ML_FORECAST : pd.DataFra
         Horizon of forecast
     hierarchies : dict
         Dictionary containg matches of key names with the relevant hierarchical tables
+    delays_config_length : int
+        Lenght of short-term forecasting period
         
     Returns
     -------
@@ -314,11 +347,12 @@ def reconcilation_algorithm(VF_FORECAST : pd.DataFrame, ML_FORECAST : pd.DataFra
     
     """
     
-    VF_FORECAST, mid_reconciled_forecast = periods_splitting(VF_FORECAST, IB_HIST_END_DT)
+    VF_FORECAST, mid_reconciled_forecast = periods_splitting(VF_FORECAST, IB_HIST_END_DT, delays_config_length)
     VF_FORECAST, ML_FORECAST = add_period_ends(VF_FORECAST, ML_FORECAST, config)
     VF_FORECAST, ML_FORECAST = match_keys(VF_FORECAST, ML_FORECAST, config, hierarchies)
     df = match_forecasts(VF_FORECAST, ML_FORECAST, IB_HIST_END_DT)
     df = interval_forecast_correction(df, config)
     df = reconcile(df, config)
+    df = add_segment_name(df, VF_TS_SEGMENTS)
     return mid_reconciled_forecast, df
     
