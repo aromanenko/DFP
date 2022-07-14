@@ -1,2 +1,0 @@
-# DFP
-Demand Forecasting Pipeline
