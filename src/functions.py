@@ -1,3 +1,15 @@
+import pandas as pd
+from tqdm.notebook import tqdm
+
+import os
+import sys
+
+project_path = os.path.abspath(os.path.join('..'))
+
+if project_path not in sys.path:
+    sys.path.append(project_path)
+
+
 class Disaccumulation:
     def __init__(self, data, out_time_lvl):
         """
