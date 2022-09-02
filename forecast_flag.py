@@ -349,6 +349,6 @@ def adding_fields(sales, stock, assort):
 
   res.customer.fillna(res.customer.min())
   res.distr_channel_id.fillna(res.distr_channel_id.min())
-  res.drop(['period_dt_x','period_dt_y'],axis=1,inplace=True)
+  res.drop(['period_dt_x','period_dt_y'],axis=1,inplace=True) # drop these columns, as they appear because of data-generating functions.
   
   return res
