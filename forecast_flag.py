@@ -241,6 +241,7 @@ def time_interval_utility(table, granuality, distance_tolerance,groupby):
       	      if (left_bound < next_right_bound and next_left_bound > next_left_bound \
                  and right_bound > next_right_bound):
                   grouped_by[j+1][1].end_dt = right_bound
+			
       dates.append((right_bound,left_bound))
       return dates
 
