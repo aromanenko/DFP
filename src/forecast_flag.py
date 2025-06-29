@@ -100,54 +100,120 @@ def generate_input_ilp(start_date, end_date):
     ASSORT_MATRIX = pd.concat([ASSORT_MATRIX, pd.Series(["Active"] * size)], axis=1)
     ASSORT_MATRIX.columns = ["product_id", "location_id", "customer_id", "distr_channel_id", "start_dt", "end_dt", 'del_flag', 'status']
 
-    LOCATION_LIFE = pd.concat([pd.Series(np.arange(10000, 10000 + size)) for _ in range(6)], axis=1)
+    LOCATION_LIFE = pd.concat([pd.Series(np.arange(10000, 10000 + size)) for _ in range(4)], axis=1)
     LOCATION_LIFE = pd.concat([LOCATION_LIFE, pd.Series(date_range)], axis=1)
-    LOCATION_LIFE.columns = ['product_id', 'location_id', 'customer_id', 'distr_channel_id', 'PERIOD_DT', 'ORDERS_QTY', 'date']
+    LOCATION_LIFE = pd.concat([LOCATION_LIFE, pd.Series(date_range + datetime.timedelta(days=15))], axis=1)
+    LOCATION_LIFE.columns = ['product_lvl_id', 'location_id', 'customer_lvl_id', 'distr_channel_lvl_id', 'period_start_dt', 'period_end_dt']
+    LOCATION_LIFE['location_successor_id'] = pd.Series(np.arange(10000 + np.random.choice([10, 20, 30, 40, 50]), 10000 + size, 100))
     LOCATION_LIFE['PERIOD_TYPE'] = pd.Series(np.random.choice(['reconstruction', 're-branding'], size))
     LOCATION_LIFE['del_flag'] = pd.Series(np.random.choice([0, 1], size))
 
-    return sales, stock, sell_in, sell_out, ASSORT_MATRIX, LOCATION_LIFE
+    CUSTOMER_LIFE = pd.concat([pd.Series(np.arange(10000, 10000 + size)) for _ in range(4)], axis=1)
+    CUSTOMER_LIFE = pd.concat([CUSTOMER_LIFE, pd.Series(date_range)], axis=1)
+    CUSTOMER_LIFE = pd.concat([CUSTOMER_LIFE, pd.Series(date_range + datetime.timedelta(days=15))], axis=1)
+    CUSTOMER_LIFE.columns = ['product_lvl_id', 'location_lvl_id', 'customer_id', 'distr_channel_lvl_id', 'period_start_dt', 'period_end_dt']
+    CUSTOMER_LIFE['customer_successor_id'] = pd.Series(np.arange(10000 + np.random.choice([10, 20, 30, 40, 50]), 10000 + size, 100))
+    CUSTOMER_LIFE['PERIOD_TYPE'] = pd.Series(np.random.choice(['active', 'blocked', 'end-of-life'], size))
+    CUSTOMER_LIFE['del_flag'] = pd.Series(np.random.choice([0, 1], size))
 
-def time_interval_utility(table, granularity, distance_tolerance, groupby):
+    PRODUCT_LIFE = pd.concat([pd.Series(np.arange(10000, 10000 + size)) for _ in range(4)], axis=1)
+    PRODUCT_LIFE = pd.concat([PRODUCT_LIFE, pd.Series(date_range)], axis=1)
+    PRODUCT_LIFE = pd.concat([PRODUCT_LIFE, pd.Series(date_range + datetime.timedelta(days=15))], axis=1)
+    PRODUCT_LIFE.columns = ['product_id', 'location_lvl_id', 'customer_lvl_id', 'distr_channel_lvl_id', 'period_start_dt', 'period_end_dt']
+    PRODUCT_LIFE['product_successor_id'] = pd.Series(np.arange(10000 + np.random.choice([10, 20, 30, 40, 50]), 10000 + size, 100))
+    PRODUCT_LIFE['PERIOD_TYPE'] = pd.Series(np.random.choice(['active', 'blocked', 'end-of-life'], size))
+    PRODUCT_LIFE['del_flag'] = pd.Series(np.random.choice([0, 1], size))
+
+    return sales, stock, sell_in, sell_out, ASSORT_MATRIX, LOCATION_LIFE, CUSTOMER_LIFE, PRODUCT_LIFE
+
+def time_interval_utility(
+    table: pd.DataFrame,
+    mpTimeGranularity: str,
+    mpDistanceTolerance: int,
+    mpGroupBy: list
+) -> pd.DataFrame:
     """
-    Technical utility for time-intervals union
+    Utility to union time-intervals within groups based on time granularity and tolerance.
 
     Parameters:
     ----------
     table : pd.DataFrame
-        The table to be transformed 
-
-    granularity : str 
-        Granularity for the dates, e.g., 'Day', 'Week', 'Month'
-
-    groupby : str 
-        The columns to group by
+        Input DataFrame containing time intervals. Must contain 'period_start_dt' and 'period_end_dt'.
+    mpTimeGranularity : str
+        'day', 'week', or 'month' – granularity of intervals.
+    mpDistanceTolerance : int
+        Number of granules to extend right interval bound.
+    mpGroupBy : list
+        List of column names to group by.
 
     Returns:
     ----------
-    list
-        List of transformed date intervals
+    pd.DataFrame
+        DataFrame with merged time intervals per group.
     """
-  
-    dates = []
 
-    # Group by the relevant columns
-    grouped = table.groupby(groupby)
+    def round_dt(dt, granularity):
+        if granularity == 'day':
+            return dt.dt.normalize()
+        elif granularity == 'week':
+            return dt - pd.to_timedelta(dt.dt.dayofweek, unit='d')
+        elif granularity == 'month':
+            return dt.values.astype('datetime64[M]')
+        else:
+            raise ValueError(f"Unsupported granularity: {granularity}")
 
-    for key, group in grouped:
-        start_dt = group['period_dt'].min()
-        end_dt = group['period_dt'].max()
+    # Validate required columns
+    if 'period_start_dt' not in table.columns or 'period_end_dt' not in table.columns:
+        raise ValueError("Input table must contain 'period_start_dt' and 'period_end_dt' columns.")
 
-        # Extend the end date based on the distance tolerance (365 days)
-        new_end_dt = end_dt + pd.Timedelta(days=distance_tolerance)
+    # Ensure datetime format
+    table['period_start_dt'] = pd.to_datetime(table['period_start_dt'], errors='coerce')
+    table['period_end_dt'] = pd.to_datetime(table['period_end_dt'], errors='coerce')
 
-        # Add the interval to the results
-        dates.append([key[0], key[1], key[2], key[3], start_dt, new_end_dt])
+    if table['period_start_dt'].isna().any() or table['period_end_dt'].isna().any():
+        raise ValueError("Some values in 'period_start_dt' or 'period_end_dt' could not be converted to datetime.")
 
-    # Create a DataFrame from the intervals
-    intervals_df = pd.DataFrame(dates, columns=['product_id', 'location_id', 'customer_id', 'distr_channel_id', 'period_start_dt', 'period_end_dt'])
+    # Round interval boundaries
+    table['_start'] = round_dt(table['period_start_dt'], mpTimeGranularity)
 
-    return intervals_df
+    if mpTimeGranularity == 'day':
+        offset = pd.to_timedelta(mpDistanceTolerance, unit='d')
+    elif mpTimeGranularity == 'week':
+        offset = pd.to_timedelta(7 * mpDistanceTolerance, unit='d')
+    elif mpTimeGranularity == 'month':
+        offset = pd.DateOffset(months=mpDistanceTolerance)
+
+    table['_end'] = round_dt(table['period_end_dt'], mpTimeGranularity) + offset
+
+    # Sort for merging
+    table = table.sort_values(by=mpGroupBy + ['_start'])
+
+    merged_intervals = []
+    for _, group_df in table.groupby(mpGroupBy):
+        group_df = group_df.reset_index(drop=True)
+        current_start = group_df.loc[0, '_start']
+        current_end = group_df.loc[0, '_end']
+        key_values = group_df.loc[0, mpGroupBy].tolist()
+
+        for i in range(1, len(group_df)):
+            row = group_df.loc[i]
+            if row['_start'] <= current_end:
+                current_end = max(current_end, row['_end'])
+            else:
+                merged_intervals.append(key_values + [current_start, current_end])
+                current_start = row['_start']
+                current_end = row['_end']
+                key_values = row[mpGroupBy].tolist()
+
+        merged_intervals.append(key_values + [current_start, current_end])
+
+    result_columns = mpGroupBy + ['period_start_dt', 'period_end_dt']
+    result = pd.DataFrame(merged_intervals, columns=result_columns)
+
+    print(f"[INFO] Merged {len(table)} intervals → {len(result)} rows")
+    print(result.head(3))
+
+    return result
 
 
 def incremental_load_preparation(SALES, STOCK, SELL_IN, SELL_OUT, ASSORT_MATRIX, LOCATION_LIFE, start_date, end_date, PRODUCT_LIFE = None, CUSTOMER_LIFE = None):
@@ -191,8 +257,8 @@ def incremental_load_preparation(SALES, STOCK, SELL_IN, SELL_OUT, ASSORT_MATRIX,
   table1 = SALES[['product_id', 'location_id', 'customer_id', 'distr_channel_id','period_dt']].drop_duplicates()
   table2 = ASSORT_MATRIX[['product_id', 'location_id', 'customer_id',\
                           'distr_channel_id']][ASSORT_MATRIX.del_flag == 1].drop_duplicates()
-  table3 = LOCATION_LIFE[['product_id', 'location_id', 'customer_id',\
-                          'distr_channel_id']][LOCATION_LIFE.del_flag == 1].drop_duplicates()
+  table3 = LOCATION_LIFE[['product_lvl_id', 'location_id', 'customer_lvl_id',\
+                          'distr_channel_lvl_id']][LOCATION_LIFE.del_flag == 1].drop_duplicates()
 
   QUADRUPLES_DELETE = pd.concat([table1,table2,table2],axis=0)
 
@@ -212,7 +278,7 @@ def incremental_load_preparation(SALES, STOCK, SELL_IN, SELL_OUT, ASSORT_MATRIX,
   ASSORT_MATRIX_UPDATE_FF['IB_UPDATE_HISTORY_DEPTH_date'] = pd.Series(pd.date_range(start_date, end_date, freq='D'))
   ASSORT_MATRIX_UPDATE_FF = ASSORT_MATRIX_UPDATE_FF.loc[(ASSORT_MATRIX_UPDATE_FF.IB_UPDATE_HISTORY_DEPTH<=0)]
   
-  return SALES_UPDATE_FF, ASSORT_MATRIX_UPDATE_FF,QUADRUPLES_DELETE
+  return SALES_UPDATE_FF, ASSORT_MATRIX_UPDATE_FF, QUADRUPLES_DELETE
 
 
 def adding_fields(sales, stock, assort):
@@ -262,7 +328,7 @@ def calculate_fact_dates(T1, sell_in_data, sell_out_data):
     fact_data['period_end_dt'] = fact_data.groupby(['product_id', 'location_id', 'customer_id', 'distr_channel_id'])['period_dt'].transform('max')
 
     # 5. Применяем utility для временных интервалов
-    intervals = time_interval_utility(fact_data, granularity='Day', distance_tolerance=365, groupby=['product_id', 'location_id', 'customer_id',  'distr_channel_id'])
+    intervals = time_interval_utility(fact_data, mpTimeGranularity='day', mpDistanceTolerance=365, mpGroupBy=['product_id', 'location_id', 'customer_id',  'distr_channel_id'])
 
     return intervals
 
@@ -293,53 +359,206 @@ def assortment_matrix_calculation(assortment_matrix, IB_MAX_DT):
     
     return result
 
-def life_cycle_information_merging(product_life, location_life, customer_life, IB_MAX_DT):
+import pandas as pd
+
+def transform_lifecycle_to_single_interval_format(life_table, name):
     """
-    Функция для объединения данных о жизненных циклах продуктов, локаций и клиентов
-    в единую таблицу.
+    Функция для преобразования таблицы жизненных циклов из формата "преемник-предшественник"
+    в формат с единичным интервалом.
     
     Parameters:
     ----------
-    product_life : pd.DataFrame
-        Таблица с данными о жизненном цикле продуктов, содержащая PRODUCT_ID, START_DT, END_DT, и другие.
+    life_table : pd.DataFrame
+        Таблица жизненного цикла (например, PRODUCT_LIFE, LOCATION_LIFE или CUSTOMER_LIFE)
         
-    location_life : pd.DataFrame
-        Таблица с данными о жизненном цикле локаций, содержащая LOCATION_ID, START_DT, END_DT, и другие.
-        
-    customer_life : pd.DataFrame
-        Таблица с данными о жизненном цикле клиентов, содержащая CUSTOMER_ID, START_DT, END_DT, и другие.
-        
-    IB_MAX_DT : datetime
-        Максимальная дата (например, 01/01/2100), используемая для заполнения недостающих END_DT.
-        
+    name : str
+        Имя таблицы, которое будет использоваться в выводе (например, "product", "location" или "customer")
+    
     Returns:
     ----------
     pd.DataFrame
-        Объединенная таблица с данными о жизненных циклах, которая будет содержать:
-        - PRODUCT_ID, LOCATION_ID, CUSTOMER_ID, DISTR_CHANNEL_ID, PERIOD_START_DT, PERIOD_END_DT
+        Объединенная таблица жизненных циклов с форматированными интервалами
+    """
+    if name == 'product':
+        # a) Извлечение уникальных записей, где <name>_SUCCESSOR_ID пустой
+        life_table_a = life_table[life_table[f'{name}_successor_id'].isna()]
+        life_table_a = life_table_a[['period_start_dt', 'period_end_dt', f'{name}_id', f'{name}_successor_id', 'location_lvl_id', 'customer_lvl_id', 'distr_channel_lvl_id']]
+    
+        # b) Извлечение уникальных записей, где <name>_ID не равен <name>_SUCCESSOR_ID
+        life_table_b = life_table[life_table[f'{name}_id'] != life_table[f'{name}_successor_id']]
+        life_table_b = life_table_b[['period_start_dt', 'period_end_dt', f'{name}_successor_id', f'{name}_id', 'location_lvl_id', 'customer_lvl_id', 'distr_channel_lvl_id']]  # используем SUCCESSOR_ID вместо ID
+    
+        # c) Извлечение уникальных записей, где <name>_ID равен <name>_SUCCESSOR_ID
+        life_table_c = life_table[life_table[f'{name}_id'] == life_table[f'{name}_successor_id']]
+        life_table_c = life_table_c[['period_start_dt', 'period_end_dt', f'{name}_id', f'{name}_successor_id', 'location_lvl_id', 'customer_lvl_id', 'distr_channel_lvl_id']]
+    
+        # d) Объединение всех трех таблиц
+        combined_life_table = pd.concat([life_table_a, life_table_b, life_table_c], axis=0, ignore_index=True)
+    elif name == 'location':
+        # a) Извлечение уникальных записей, где <name>_SUCCESSOR_ID пустой
+        life_table_a = life_table[life_table[f'{name}_successor_id'].isna()]
+        life_table_a = life_table_a[['period_start_dt', 'period_end_dt', f'{name}_id', f'{name}_successor_id', 'product_lvl_id', 'customer_lvl_id', 'distr_channel_lvl_id']]
+    
+        # b) Извлечение уникальных записей, где <name>_ID не равен <name>_SUCCESSOR_ID
+        life_table_b = life_table[life_table[f'{name}_id'] != life_table[f'{name}_successor_id']]
+        life_table_b = life_table_b[['period_start_dt', 'period_end_dt', f'{name}_successor_id', f'{name}_id', 'product_lvl_id', 'customer_lvl_id', 'distr_channel_lvl_id']]  # используем SUCCESSOR_ID вместо ID
+    
+        # c) Извлечение уникальных записей, где <name>_ID равен <name>_SUCCESSOR_ID
+        life_table_c = life_table[life_table[f'{name}_id'] == life_table[f'{name}_successor_id']]
+        life_table_c = life_table_c[['period_start_dt', 'period_end_dt', f'{name}_id', f'{name}_successor_id', 'product_lvl_id', 'customer_lvl_id', 'distr_channel_lvl_id']]
+    
+        # d) Объединение всех трех таблиц
+        combined_life_table = pd.concat([life_table_a, life_table_b, life_table_c], axis=0, ignore_index=True)
+    else:
+        # a) Извлечение уникальных записей, где <name>_SUCCESSOR_ID пустой
+        life_table_a = life_table[life_table[f'{name}_successor_id'].isna()]
+        life_table_a = life_table_a[['period_start_dt', 'period_end_dt', f'{name}_id', f'{name}_successor_id', 'product_lvl_id', 'location_lvl_id', 'distr_channel_lvl_id']]
+    
+        # b) Извлечение уникальных записей, где <name>_ID не равен <name>_SUCCESSOR_ID
+        life_table_b = life_table[life_table[f'{name}_id'] != life_table[f'{name}_successor_id']]
+        life_table_b = life_table_b[['period_start_dt', 'period_end_dt', f'{name}_successor_id', f'{name}_id', 'product_lvl_id', 'location_lvl_id', 'distr_channel_lvl_id']]  # используем SUCCESSOR_ID вместо ID
+    
+        # c) Извлечение уникальных записей, где <name>_ID равен <name>_SUCCESSOR_ID
+        life_table_c = life_table[life_table[f'{name}_id'] == life_table[f'{name}_successor_id']]
+        life_table_c = life_table_c[['period_start_dt', 'period_end_dt', f'{name}_id', f'{name}_successor_id', 'product_lvl_id', 'location_lvl_id', 'distr_channel_lvl_id']]
+    
+        # d) Объединение всех трех таблиц
+        combined_life_table = pd.concat([life_table_a, life_table_b, life_table_c], axis=0, ignore_index=True)
+
+
+    # Возвращаем итоговую таблицу
+    return combined_life_table
+
+
+def life_cycle_information_merging(product_life, location_life, customer_life, IB_MAX_DT):
+    """
+    Функция для обработки таблиц жизненных циклов продуктов, локаций и клиентов,
+    преобразует их в единичные интервалы, объединяет и вызывает утилиту time_interval_utility.
+
+    Parameters:
+    ----------
+    product_life : pd.DataFrame
+        Таблица жизненного цикла продуктов.
+        
+    location_life : pd.DataFrame
+        Таблица жизненного цикла локаций.
+        
+    customer_life : pd.DataFrame
+        Таблица жизненного цикла клиентов.
+        
+    IB_MAX_DT : datetime
+        Максимальная дата для заполнения пропущенных значений.
+    
+    Returns:
+    ----------
+    pd.DataFrame
+        Объединенная таблица жизненных циклов с нужной структурой.
     """
     
-    # Преобразуем столбцы даты в datetime
-    product_life['START_DT'] = pd.to_datetime(product_life['START_DT'])
-    product_life['END_DT'] = pd.to_datetime(product_life['END_DT'])
-    location_life['START_DT'] = pd.to_datetime(location_life['START_DT'])
-    location_life['END_DT'] = pd.to_datetime(location_life['END_DT'])
-    customer_life['START_DT'] = pd.to_datetime(customer_life['START_DT'])
-    customer_life['END_DT'] = pd.to_datetime(customer_life['END_DT'])
+    # Преобразуем таблицы жизненных циклов для каждого типа (продукт, локация, клиент)
+    product_life_transformed = transform_lifecycle_to_single_interval_format(product_life, "product")
+    print(product_life_transformed)
+    location_life_transformed = transform_lifecycle_to_single_interval_format(location_life, "location")
+    print(location_life_transformed)
+    customer_life_transformed = transform_lifecycle_to_single_interval_format(customer_life, "customer")
+    print(customer_life_transformed)
 
-    # Объединяем данные о жизненных циклах продуктов, локаций и клиентов
-    combined_life = pd.concat([product_life[['PRODUCT_ID', 'START_DT', 'END_DT']],
-                               location_life[['LOCATION_ID', 'START_DT', 'END_DT']],
-                               customer_life[['CUSTOMER_ID', 'START_DT', 'END_DT']]], axis=0)
+    # Применяем утилиту time_interval_utility для каждой таблицы жизненных циклов с нужной группировкой
+    # Для таблицы продуктов
+    i = 0
+    while i < 3:
+        product_life_processed = time_interval_utility(
+            product_life_transformed, 
+            mpTimeGranularity='day', 
+            mpDistanceTolerance=365, 
+            mpGroupBy=['product_id', 'location_lvl_id', 'customer_lvl_id', 'distr_channel_lvl_id']
+        )
+        
+        # Для таблицы локаций
+        location_life_processed = time_interval_utility(
+            location_life_transformed, 
+            mpTimeGranularity='day', 
+            mpDistanceTolerance=365, 
+            mpGroupBy=['location_id', 'customer_lvl_id', 'product_lvl_id', 'distr_channel_lvl_id']
+        )
+        
+        # Для таблицы клиентов
+        customer_life_processed = time_interval_utility(
+            customer_life_transformed, 
+            mpTimeGranularity='day', 
+            mpDistanceTolerance=365, 
+            mpGroupBy=['customer_id', 'location_lvl_id', 'product_lvl_id', 'distr_channel_lvl_id']
+        )
+        i += 1
 
-    # Заполняем пропуски в END_DT значением IB_MAX_DT
-    combined_life['END_DT'] = combined_life['END_DT'].fillna(IB_MAX_DT)
+    # Объединяем все обработанные данные в единую таблицу
+    all_processed_data = pd.concat([
+        product_life_processed[['product_id', 'location_lvl_id', 'customer_lvl_id', 'distr_channel_lvl_id', 'period_start_dt', 'period_end_dt']],
+        location_life_processed[['product_lvl_id', 'location_id', 'customer_lvl_id', 'distr_channel_lvl_id', 'period_start_dt', 'period_end_dt']],
+        customer_life_processed[['product_lvl_id', 'location_lvl_id', 'customer_id', 'distr_channel_lvl_id', 'period_start_dt', 'period_end_dt']]
+    ], axis=0, ignore_index=True)
+
+    # Возвращаем итоговую таблицу с нужной структурой
+    return all_processed_data[['product_id', 'customer_id', 'location_id', 'period_start_dt', 'period_end_dt']]
+
+def forecast_flag_calculation(ff_fact_dates, ff_assort_dates, ff_life_dates, quadruples_delete, forecast_flag):
+    """
+    Функция для выполнения расчета прогноза флага на основе временных таблиц и выполнения алгоритма из шага 3.6.
     
-    # Объединяем данные о жизненных циклах по ключам (PRODUCT_ID, LOCATION_ID, CUSTOMER_ID)
-    combined_life['PERIOD_START_DT'] = combined_life.groupby(['PRODUCT_ID', 'LOCATION_ID', 'CUSTOMER_ID'])['START_DT'].transform('min')
-    combined_life['PERIOD_END_DT'] = combined_life.groupby(['PRODUCT_ID', 'LOCATION_ID', 'CUSTOMER_ID'])['END_DT'].transform('max')
+    Parameters:
+    ----------
+    ff_fact_dates : pd.DataFrame
+        Временная таблица FF_FACT_DATES (T2)
+        
+    ff_assort_dates : pd.DataFrame
+        Временная таблица FF_ASSORT_DATES
     
-    # Убираем лишние столбцы и возвращаем итоговую таблицу
-    result = combined_life[['PRODUCT_ID', 'LOCATION_ID', 'CUSTOMER_ID', 'PERIOD_START_DT', 'PERIOD_END_DT']]
+    ff_life_dates : pd.DataFrame
+        Временная таблица FF_LIFE_DATES
     
-    return result
+    forecast_flag : pd.DataFrame
+        Таблица FORECAST_FLAG, в которую будет обновлен результат
+    
+    quadruples_delete : pd.DataFrame
+        Таблица с записями для удаления
+    
+    Returns:
+    ----------
+    pd.DataFrame
+        Обновленная таблица FORECAST_FLAG с результатами флага прогноза
+    """
+    
+    # 1. Объединяем входные таблицы в WORK.FF_DATES
+    ff_dates = pd.concat([ff_fact_dates, ff_assort_dates, ff_life_dates], axis=0, ignore_index=True)
+    
+    # 2. Вызов утилиты для обработки временных интервалов
+    ff_dates_transformed = time_interval_utility(
+        ff_dates,
+        mpTimeGranularity='day',
+        mpDistanceTolerance=1,
+        mpGroupBy=['product_id', 'location_id', 'customer_id', 'distr_channel_id']
+    )
+    
+    # 3. Добавляем новое поле STATUS с постоянным значением 'active'
+    ff_dates_transformed['STATUS'] = 'active'
+    
+    # 4. Обновление таблицы FORECAST_FLAG:
+    # a. Удаляем все строки из FORECAST_FLAG, которые содержат записи из QUADRUPLES_DELETE
+    if not forecast_flag.empty:
+        forecast_flag_cleaned = forecast_flag[~forecast_flag.isin(quadruples_delete)].dropna()
+    else:
+        forecast_flag_cleaned = forecast_flag
+    
+    # b. Добавляем строки из шага 3 (ff_dates_transformed)
+    forecast_flag_updated = pd.concat([forecast_flag_cleaned, ff_dates_transformed], axis=0, ignore_index=True)
+    
+    # 5. Вызов утилиты для объединения пересекающихся интервалов
+    forecast_flag_final = time_interval_utility(
+        forecast_flag_updated,
+        mpTimeGranularity='day',
+        mpDistanceTolerance=1,
+        mpGroupBy=['product_id', 'location_id', 'customer_id', 'distr_channel_id']
+    )
+    
+    # Возвращаем итоговую таблицу
+    return forecast_flag_final
