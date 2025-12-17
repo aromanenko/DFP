@@ -86,9 +86,9 @@ def hybridization(data: pd.DataFrame) -> pd.DataFrame:
             FORECAST_SOURCE.append('vf')
             ENSEMBLE_FORECAST_VALUE.append(np.nan)
         else:
-            HYBRID_FORECAST_VALUE.append(np.mean(row.ML_FORECAST_VALUE, row.VF_FORECAST_VALUE))
+            HYBRID_FORECAST_VALUE.append(np.mean([row.ML_FORECAST_VALUE, row.VF_FORECAST_VALUE]))
             FORECAST_SOURCE.append('ensemble')
-            ENSEMBLE_FORECAST_VALUE.append(np.mean(row.ML_FORECAST_VALUE, row.VF_FORECAST_VALUE))
+            ENSEMBLE_FORECAST_VALUE.append(np.mean([row.ML_FORECAST_VALUE, row.VF_FORECAST_VALUE]))
     HYBRID_FORECAST_VALUE = pd.Series(HYBRID_FORECAST_VALUE)
     FORECAST_SOURCE = pd.Series(FORECAST_SOURCE)
     ENSEMBLE_FORECAST_VALUE = pd.Series(ENSEMBLE_FORECAST_VALUE)
